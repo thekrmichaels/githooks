@@ -1,0 +1,32 @@
+#!/bin/bash
+set -e
+
+# Load environment variables from .env file if it exists
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+[[ -f "$PROJECT_ROOT/.env" ]] && { set -a; source "$PROJECT_ROOT/.env"; set +a; }
+
+# Configuration
+NOTION_TOKEN="${NOTION_TOKEN:?❌ Missing NOTION_TOKEN}"
+VERSION="2022-06-28"
+NOTION_API="https://api.notion.com/v1"
+
+# Retrieve the latest commit message
+COMMIT_MSG=$(git log -1 --pretty=%B)
+
+# Extract Notion page ID from commit message
+if [[ "$COMMIT_MSG" =~ https://www\.notion\.so/([a-f0-9]{32}) ]]; then
+    RAW_ID="${BASH_REMATCH[1]}"
+    PAGE_ID="${RAW_ID:0:8}-${RAW_ID:8:4}-${RAW_ID:12:4}-${RAW_ID:16:4}-${RAW_ID:20}"
+    echo "📌 Marking task as Done in Notion: $PAGE_ID"
+    
+    # Update the Notion page to mark the task as done
+    curl -s -X PATCH "$NOTION_API/pages/$PAGE_ID" \
+    -H "Authorization: Bearer $NOTION_TOKEN" \
+    -H "Notion-Version: $VERSION" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "properties": {
+        "Done": { "checkbox": true }
+      }
+    }' > /dev/null || true
+fi

@@ -1,0 +1,75 @@
+#!/bin/bash
+set -e
+
+MSG_FILE="$1"
+
+# Load .env from project root
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+[[ -f "$PROJECT_ROOT/.env" ]] && { set -a; source "$PROJECT_ROOT/.env"; set +a; }
+
+# Configuration
+NOTION_TOKEN="${NOTION_TOKEN:?❌ Missing NOTION_TOKEN}"
+DATABASE_ID="${DATABASE_ID:?❌ Missing DATABASE_ID}"
+NOTION_API="https://api.notion.com/v1"
+VERSION="2022-06-28"
+
+# Read current commit message
+INITIAL_MSG=""
+[[ -f "$MSG_FILE" ]] && INITIAL_MSG=$(<"$MSG_FILE")
+
+# Detect @task:<alphanumeric>
+if [[ "$INITIAL_MSG" =~ @task:([a-zA-Z0-9]+) ]]; then
+  TASK_ID="${BASH_REMATCH[1]}"
+  echo "🔎 Searching for Task ID: $TASK_ID"
+
+  # Query the database for the task with that Task ID
+  RESPONSE=$(curl -s -X POST "$NOTION_API/databases/$DATABASE_ID/query" \
+    -H "Authorization: Bearer $NOTION_TOKEN" \
+    -H "Notion-Version: $VERSION" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "filter": {
+        "property": "Task ID",
+        "title": { "equals": "'"$TASK_ID"'" }
+      }
+    }')
+
+  MATCH_COUNT=$(echo "$RESPONSE" | jq '.results | length')
+  if (( MATCH_COUNT == 0 )); then
+    echo "❌ Task ID $TASK_ID not found in Notion."
+    exit 1
+  fi
+
+  PAGE=$(echo "$RESPONSE" | jq '.results[0]')
+  PAGE_ID=$(echo "$PAGE" | jq -r '.id')
+else
+  echo "ℹ️ No @task:<id> found. Skipping Notion integration."
+  exit 0
+fi
+
+# Extract properties
+declare -A properties
+properties[type]=$(echo "$PAGE" | jq -r '.properties.type.select.name // empty')
+properties[gitmoji]=$(echo "$PAGE" | jq -r '.properties.gitmoji.select.name // empty')
+for prop in "scope (optional)" description "body (optional)" "footer(s) (optional)"; do
+  properties[$prop]=$(echo "$PAGE" | jq -r ".properties[\"$prop\"].rich_text[0].plain_text // empty")
+done
+
+# Validate required fields
+if [[ -z "${properties[type]}" || -z "${properties[description]}" ]]; then
+  echo "❌ Missing required commit info in Notion task."
+  exit 1
+fi
+
+# Build message
+HEADER="${properties[type]}${properties[scope]:+(${properties[scope]})}: ${properties[gitmoji]:+${properties[gitmoji]} }${properties[description]}"
+
+{
+  echo "$HEADER"
+  echo
+  [[ -n "${properties[body]}" ]] && echo "${properties[body]}" && echo
+  [[ -n "${properties[footer]}" ]] && echo "${properties[footer]}"
+  echo
+  NOTION_URL="https://www.notion.so/${PAGE_ID//-/}"
+  echo "$NOTION_URL" # For post-commit to detect
+} > "$MSG_FILE"
